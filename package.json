@@ -1,0 +1,16 @@
+{
+  "name": "shanghai-house-data-poc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PoC scripts for exploring fangdi.com.cn crawlability.",
+  "scripts": {
+    "probe:fangdi": "node scripts/probe-fangdi.mjs",
+    "watch:fangdi": "node scripts/watch-fangdi-session.mjs",
+    "playwright:fangdi": "node scripts/playwright-fangdi.mjs",
+    "ocr:fangdi": "node scripts/test-fangdi-ocr.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.58.2"
+  }
+}

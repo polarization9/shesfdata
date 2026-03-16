@@ -1,0 +1,41 @@
+{
+  "api_base": "http://127.0.0.1:8765",
+  "results_file": "/root/fangdi-data/var/fangdi-count-results.jsonl",
+  "runner": {
+    "query_page_url": "https://www.fangdi.com.cn/old_house/old_house.html",
+    "between_queries_ms": [1800, 2800],
+    "after_submit_ms": [1800, 2600],
+    "after_filter_ms": [400, 900],
+    "max_captcha_refresh": 4,
+    "labels": {
+      "district": "所在区域",
+      "plate": "所属板块",
+      "listing_age": "挂牌时间",
+      "captcha": "验证码",
+      "query_button": "查询"
+    },
+    "selectors": {
+      "district_control": "",
+      "plate_control": "",
+      "listing_age_control": "",
+      "captcha_input": "",
+      "captcha_image": "#imgVerify",
+      "query_button": ""
+    },
+    "success_pattern": "显示记录共\\s*(\\d+)\\s*条",
+    "captcha_error_pattern": "验证码.{0,6}(错误|不正确|有误|重新输入)"
+  },
+  "dimensions": {
+    "districts": [
+      {
+        "name": "黄浦区",
+        "plates": ["老西门板块", "董家渡板块"]
+      },
+      {
+        "name": "徐汇区",
+        "plates": ["徐家汇板块"]
+      }
+    ],
+    "listing_age_buckets": ["15天", "1个月", "3个月", "3个月以上"]
+  }
+}
