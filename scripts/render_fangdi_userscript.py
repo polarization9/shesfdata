@@ -522,6 +522,34 @@ TEMPLATE = r"""// ==UserScript==
     });
   }
 
+  async function failCurrentTaskAndContinue(state, task, status, message, extra = {}) {
+    await appendResult({
+      task_id: task.task_id,
+      district: task.district,
+      plate: task.plate,
+      listing_age: task.listing_age,
+      recorded_at: now(),
+      status,
+      page_url: location.href,
+      ...extra
+    });
+
+    const next = saveState({
+      index: state.index + 1,
+      phase: "prepare",
+      currentTask: null,
+      failureCount: (state.failureCount || 0) + 1,
+      lastMessage: message,
+      lastError: ""
+    });
+
+    if (next.index >= PLAN.items.length) {
+      saveState({ active: false, phase: "done", lastMessage: "全部任务完成" });
+    } else {
+      scheduleTick(rand(CONFIG.runner.between_queries_ms));
+    }
+  }
+
   async function runCurrentTask(state) {
     if (state.index >= PLAN.items.length) {
       saveState({ active: false, phase: "done", lastMessage: "全部任务完成", lastError: "" });
@@ -535,13 +563,46 @@ TEMPLATE = r"""// ==UserScript==
       return;
     }
 
-    await setSelectValue(ready.district, task.district);
-    await sleep(rand(CONFIG.runner.after_filter_ms));
-    await waitForPlateOption(task.plate);
-    await setSelectValue(getPlateControl(), task.plate);
-    await sleep(rand(CONFIG.runner.after_filter_ms));
-    await setSelectValue(getListingAgeControl(), task.listing_age);
-    await sleep(rand(CONFIG.runner.after_filter_ms));
+    try {
+      await setSelectValue(ready.district, task.district);
+      await sleep(rand(CONFIG.runner.after_filter_ms));
+
+      const plateControl = await waitForPlateOption(task.plate);
+      if (!plateControl) {
+        await failCurrentTaskAndContinue(
+          state,
+          task,
+          "invalid_plate",
+          `${task.district} / ${task.plate} 不在当前网站板块列表里`
+        );
+        return;
+      }
+
+      await setSelectValue(plateControl, task.plate);
+      await sleep(rand(CONFIG.runner.after_filter_ms));
+      await setSelectValue(getListingAgeControl(), task.listing_age);
+      await sleep(rand(CONFIG.runner.after_filter_ms));
+    } catch (error) {
+      const message = String(error);
+      if (message.includes("select option not found:")) {
+        const missing = message.split("select option not found:")[1].trim();
+        const status =
+          missing === task.plate ? "invalid_plate" :
+          missing === task.district ? "invalid_district" :
+          missing === task.listing_age ? "invalid_listing_age" :
+          "invalid_option";
+
+        await failCurrentTaskAndContinue(
+          state,
+          task,
+          status,
+          `${task.district} / ${task.plate} / ${task.listing_age} 配置值不存在: ${missing}`,
+          { invalid_value: missing }
+        );
+        return;
+      }
+      throw error;
+    }
 
     for (let retries = 0; retries < CONFIG.runner.max_captcha_refresh; retries += 1) {
       const ocr = await ocrCaptcha();
