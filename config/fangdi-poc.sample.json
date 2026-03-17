@@ -6,6 +6,8 @@
     "between_queries_ms": [1800, 2800],
     "after_submit_ms": [1800, 2600],
     "after_filter_ms": [400, 900],
+    "post_submit_settle_ms": 2500,
+    "result_wait_ms": 8000,
     "max_captcha_refresh": 4,
     "labels": {
       "district": "所在区域",

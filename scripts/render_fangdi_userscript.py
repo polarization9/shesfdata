@@ -305,8 +305,22 @@ TEMPLATE = r"""// ==UserScript==
   function readCount() {
     const text = document.body ? document.body.innerText : "";
     const match = text.match(successRe);
+    let urlCount = null;
+    let urlPageCount = null;
+    try {
+      const params = new URL(location.href).searchParams;
+      const rawCount = params.get("RecordCount");
+      const rawPageCount = params.get("PageCount");
+      if (rawCount && /^\d+$/.test(rawCount)) {
+        urlCount = Number(rawCount);
+      }
+      if (rawPageCount && /^\d+$/.test(rawPageCount)) {
+        urlPageCount = Number(rawPageCount);
+      }
+    } catch {}
     return {
-      count: match ? Number(match[1]) : null,
+      count: match ? Number(match[1]) : urlCount,
+      pageCount: urlPageCount,
       text
     };
   }
@@ -418,7 +432,7 @@ TEMPLATE = r"""// ==UserScript==
     };
 
     if (outcome.kind === "success" && summary.count !== null) {
-      await appendResult({ ...basePayload, status: "success", count: summary.count });
+      await appendResult({ ...basePayload, status: "success", count: summary.count, page_count: summary.pageCount });
       const next = saveState({
         index: state.index + 1,
         phase: "prepare",
