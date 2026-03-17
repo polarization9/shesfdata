@@ -15,12 +15,12 @@
       "query_button": "查询"
     },
     "selectors": {
-      "district_control": "",
-      "plate_control": "",
-      "listing_age_control": "",
+      "district_control": "#district",
+      "plate_control": "#regionid",
+      "listing_age_control": "#timeVal",
       "captcha_input": "",
       "captcha_image": "#imgVerify",
-      "query_button": ""
+      "query_button": "button.red_btn[onclick=\"check()\"]"
     },
     "success_pattern": "显示记录共\\s*(\\d+)\\s*条",
     "captcha_error_pattern": "验证码.{0,6}(错误|不正确|有误|重新输入)"

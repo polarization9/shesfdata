@@ -5,14 +5,14 @@
 - 直接使用腾讯云服务器
 - PoC 阶段继续使用 `root` 用户
 - 先在远程桌面里手工解锁 `fangdi`
-- 再启动一小批自动查询任务
+- 再通过 Firefox userscript 启动一小批自动查询任务
 
 ## 1. 这次新增了哪些文件
 
 - `config/fangdi-poc.sample.json`
 - `scripts/build_query_plan.py`
 - `scripts/ocr_http_service.py`
-- `scripts/render_fangdi_browser_runner.py`
+- `scripts/render_fangdi_userscript.py`
 - `scripts/summarize_fangdi_counts.py`
 
 ## 2. 在服务器上准备目录
@@ -132,22 +132,22 @@ curl http://127.0.0.1:8765/healthz
 
 说明服务正常。
 
-## 8. 生成浏览器内 runner
+## 8. 生成跨刷新 userscript
 
 再开一个 SSH 窗口执行：
 
 ```bash
 cd /root/work/fangdi-data
 . .venv/bin/activate
-python scripts/render_fangdi_browser_runner.py \
+python scripts/render_fangdi_userscript.py \
   /root/fangdi-data/config/fangdi-poc.json \
   /root/fangdi-data/generated/query-plan.json \
-  /root/fangdi-data/generated/fangdi-browser-runner.js
+  /root/fangdi-data/generated/fangdi-userscript.js
 ```
 
 成功后会得到：
 
-- `/root/fangdi-data/generated/fangdi-browser-runner.js`
+- `/root/fangdi-data/generated/fangdi-userscript.js`
 
 ## 9. 在远程桌面里手工解锁 Fangdi
 
@@ -163,20 +163,41 @@ python scripts/render_fangdi_browser_runner.py \
 - 站前 challenge 已过
 - 当前页面处于“可提交查询”的状态
 
-## 10. 执行浏览器 runner
+## 10. 安装并执行 userscript
 
-在远程桌面的浏览器里打开 DevTools Console。
+在远程桌面的 Firefox 里，先安装一个 userscript 扩展。
 
-然后把这个文件内容整体复制进去执行：
+推荐：
 
-- `/root/fangdi-data/generated/fangdi-browser-runner.js`
+- `Violentmonkey`
+- `Tampermonkey`
 
-执行后，页面右下角会出现一个小状态框。
+安装完成后：
 
-注意：
+1. 打开扩展的新脚本编辑页
+2. 删除默认模板内容
+3. 把这个文件的全部内容粘进去保存：
 
-- 如果 DevTools 打开后页面又开始不稳定，你可以在 runner 启动后把 DevTools 关掉
-- 页面只要不刷新，脚本通常会继续跑
+- `/root/fangdi-data/generated/fangdi-userscript.js`
+
+然后回到 `fangdi` 查询页并刷新页面。
+
+如果脚本安装成功，页面右下角会出现一个状态框：
+
+- `Fangdi Userscript`
+- `开始`
+- `停止`
+- `重置`
+
+你手工解锁完页面后，点击：
+
+- `开始`
+
+这版和之前最大的区别是：
+
+- 查询提交后即使整页刷新，脚本也会自动从 `localStorage` 里恢复进度继续跑
+- 不需要每次都往 Console 里粘贴长脚本
+- 右下角状态框会在新页面重新出现
 
 ## 11. 查看结果文件
 
@@ -223,7 +244,7 @@ python scripts/summarize_fangdi_counts.py \
 第一轮 PoC 不要追求“跑很多”，只验证这 4 件事：
 
 1. 浏览器能否成功请求 `http://127.0.0.1:8765/ocr`
-2. runner 能否自动填写：
+2. userscript 能否自动填写：
    - 区
    - 板块
    - 挂牌时间
@@ -234,7 +255,7 @@ python scripts/summarize_fangdi_counts.py \
 
 ## 14. 第一版最可能卡住的地方
 
-这版 runner 现在默认假设：
+这版 userscript 现在默认假设：
 
 - 页面控件要么是原生 `select`
 - 要么是点开后按可见文本点击选项
@@ -257,6 +278,15 @@ python scripts/summarize_fangdi_counts.py \
 这会是下一步校准工作。
 
 ## 15. 你现在最推荐的执行顺序
+
+1. 启动 `ocr_http_service.py`
+2. 生成 `query-plan.json`
+3. 生成 `fangdi-userscript.js`
+4. 在 Firefox 里安装 userscript 扩展
+5. 把 `fangdi-userscript.js` 粘进去保存
+6. 打开 `fangdi` 页面并手工解锁一次
+7. 点击右下角的 `开始`
+8. 在 SSH 里用 `tail -f` 盯住结果文件
 
 就按下面顺序做：
 
