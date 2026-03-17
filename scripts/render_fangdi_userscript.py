@@ -10,7 +10,9 @@ TEMPLATE = r"""// ==UserScript==
 // @version      0.1.0
 // @description  Persisted count-query runner for fangdi.com.cn
 // @match        https://www.fangdi.com.cn/old_house/*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      127.0.0.1
+// @connect      localhost
 // ==/UserScript==
 
 (function () {
@@ -20,6 +22,7 @@ TEMPLATE = r"""// ==UserScript==
   const PLAN = __PLAN__;
   const STATE_KEY = "__fangdi_userscript_state_v1";
   const BOOT_KEY = "__fangdi_userscript_booting_v1";
+  const ALERT_KEY = "__fangdi_userscript_last_alert_v1";
 
   const labels = CONFIG.runner.labels || {};
   const selectors = CONFIG.runner.selectors || {};
@@ -29,6 +32,63 @@ TEMPLATE = r"""// ==UserScript==
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const rand = ([minMs, maxMs]) => minMs + Math.floor(Math.random() * (maxMs - minMs + 1));
   const now = () => new Date().toISOString();
+
+  (function patchAlert() {
+    if (window.__fangdiAlertPatched) return;
+    window.__fangdiAlertPatched = true;
+    const originalAlert = window.alert;
+    window.alert = function (message) {
+      try {
+        localStorage.setItem(ALERT_KEY, String(message || ""));
+      } catch {}
+      return originalAlert.call(window, message);
+    };
+  })();
+
+  function popLastAlert() {
+    try {
+      const value = localStorage.getItem(ALERT_KEY) || "";
+      localStorage.removeItem(ALERT_KEY);
+      return value;
+    } catch {
+      return "";
+    }
+  }
+
+  async function httpJson(url, payload) {
+    if (typeof GM_xmlhttpRequest === "function") {
+      return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: "POST",
+          url,
+          headers: { "Content-Type": "application/json" },
+          data: JSON.stringify(payload),
+          onload: (response) => {
+            if (response.status < 200 || response.status >= 300) {
+              reject(new Error(`http ${response.status}`));
+              return;
+            }
+            try {
+              resolve(JSON.parse(response.responseText));
+            } catch (error) {
+              reject(error);
+            }
+          },
+          onerror: () => reject(new Error("GM_xmlhttpRequest network error"))
+        });
+      });
+    }
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      throw new Error(`http ${response.status}`);
+    }
+    return response.json();
+  }
 
   function defaultState() {
     return {
@@ -208,28 +268,38 @@ TEMPLATE = r"""// ==UserScript==
     return canvas.toDataURL("image/png");
   }
 
+  function currentFormSnapshot() {
+    const district = getDistrictControl();
+    const plate = getPlateControl();
+    const listingAge = getListingAgeControl();
+    const captchaInput = getCaptchaInput();
+
+    const selectedText = (control) => {
+      if (!control) return "";
+      if (control.tagName && control.tagName.toLowerCase() === "select") {
+        const option = control.options[control.selectedIndex];
+        return option ? normalizeSpace(option.textContent) : "";
+      }
+      return normalizeSpace(control.value || "");
+    };
+
+    return {
+      district_value: district ? district.value : "",
+      district_text: selectedText(district),
+      plate_value: plate ? plate.value : "",
+      plate_text: selectedText(plate),
+      listing_age_value: listingAge ? listingAge.value : "",
+      listing_age_text: selectedText(listingAge),
+      captcha_value: captchaInput ? (captchaInput.value || "") : ""
+    };
+  }
+
   async function ocrCaptcha() {
-    const response = await fetch(`${CONFIG.api_base}/ocr`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image_data_url: captureCaptchaDataUrl() })
-    });
-    if (!response.ok) {
-      throw new Error(`ocr http ${response.status}`);
-    }
-    return response.json();
+    return httpJson(`${CONFIG.api_base}/ocr`, { image_data_url: captureCaptchaDataUrl() });
   }
 
   async function appendResult(payload) {
-    const response = await fetch(`${CONFIG.api_base}/append-result`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    if (!response.ok) {
-      throw new Error(`append-result http ${response.status}`);
-    }
-    return response.json();
+    return httpJson(`${CONFIG.api_base}/append-result`, payload);
   }
 
   function readCount() {
@@ -239,6 +309,30 @@ TEMPLATE = r"""// ==UserScript==
       count: match ? Number(match[1]) : null,
       text
     };
+  }
+
+  async function waitForSubmissionOutcome() {
+    const settleMs = CONFIG.runner.post_submit_settle_ms || 2500;
+    const waitMs = CONFIG.runner.result_wait_ms || 8000;
+
+    await sleep(settleMs);
+
+    const found = await waitFor(() => {
+      const summary = readCount();
+      if (summary.count !== null) {
+        return { kind: "success", summary };
+      }
+      if (captchaErrorRe.test(summary.text || "")) {
+        return { kind: "captcha_error", summary };
+      }
+      return null;
+    }, waitMs, 300);
+
+    if (found) {
+      return found;
+    }
+
+    return { kind: "unknown", summary: readCount() };
   }
 
   function refreshCaptcha() {
@@ -307,7 +401,9 @@ TEMPLATE = r"""// ==UserScript==
       return saveState({ active: false, phase: "idle", lastError: "missing currentTask after refresh" });
     }
 
-    const summary = readCount();
+    const outcome = await waitForSubmissionOutcome();
+    const summary = outcome.summary;
+    const alertMessage = popLastAlert();
     const basePayload = {
       task_id: task.task_id,
       district: task.district,
@@ -316,10 +412,12 @@ TEMPLATE = r"""// ==UserScript==
       captcha_guess: task.captcha_guess,
       captcha_attempt: task.captcha_attempt,
       recorded_at: now(),
-      page_url: location.href
+      page_url: location.href,
+      alert_message: alertMessage,
+      form_snapshot: task.form_snapshot || null
     };
 
-    if (summary.count !== null) {
+    if (outcome.kind === "success" && summary.count !== null) {
       await appendResult({ ...basePayload, status: "success", count: summary.count });
       const next = saveState({
         index: state.index + 1,
@@ -337,7 +435,7 @@ TEMPLATE = r"""// ==UserScript==
       return;
     }
 
-    if (captchaErrorRe.test(summary.text || "")) {
+    if (outcome.kind === "captcha_error") {
       const attempts = task.captcha_attempt || 1;
       if (attempts >= CONFIG.runner.max_captcha_refresh) {
         await appendResult({ ...basePayload, status: "captcha_exhausted", count: null });
@@ -367,13 +465,46 @@ TEMPLATE = r"""// ==UserScript==
       return;
     }
 
+    if (alertMessage) {
+      const looksLikeCaptcha = captchaErrorRe.test(alertMessage) || /验证码/.test(alertMessage);
+      if (looksLikeCaptcha) {
+        const attempts = task.captcha_attempt || 1;
+        if (attempts >= CONFIG.runner.max_captcha_refresh) {
+          await appendResult({ ...basePayload, status: "captcha_exhausted", count: null, page_excerpt: (summary.text || "").slice(0, 1000) });
+          const next = saveState({
+            index: state.index + 1,
+            phase: "prepare",
+            currentTask: null,
+            failureCount: (state.failureCount || 0) + 1,
+            lastMessage: `${task.district} / ${task.plate} / ${task.listing_age} 验证码重试耗尽`,
+            lastError: alertMessage
+          });
+          if (next.index >= PLAN.items.length) {
+            saveState({ active: false, phase: "done", lastMessage: "全部任务完成" });
+          } else {
+            scheduleTick(rand(CONFIG.runner.between_queries_ms));
+          }
+          return;
+        }
+
+        saveState({
+          phase: "prepare",
+          currentTask: { ...task, captcha_attempt: attempts + 1 },
+          lastMessage: `${task.district} / ${task.plate} / ${task.listing_age} ${alertMessage}`,
+          lastError: ""
+        });
+        scheduleTick(rand(CONFIG.runner.after_filter_ms));
+        return;
+      }
+    }
+
     await appendResult({ ...basePayload, status: "unknown", count: null, page_excerpt: (summary.text || "").slice(0, 1000) });
     saveState({
       active: false,
       phase: "error",
       failureCount: (state.failureCount || 0) + 1,
       lastMessage: `${task.district} / ${task.plate} / ${task.listing_age} 返回未知页面`,
-      lastError: "提交后未识别到结果数，也不是验证码错误"
+      lastError: alertMessage || "提交后未识别到结果数，也不是验证码错误"
     });
   }
 
@@ -426,7 +557,8 @@ TEMPLATE = r"""// ==UserScript==
         currentTask: {
           ...task,
           captcha_guess: guess,
-          captcha_attempt: task.captcha_attempt
+          captcha_attempt: task.captcha_attempt,
+          form_snapshot: currentFormSnapshot()
         },
         lastMessage: `提交中 ${task.district} / ${task.plate} / ${task.listing_age}`,
         lastError: ""
