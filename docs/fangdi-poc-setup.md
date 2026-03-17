@@ -288,6 +288,84 @@ python scripts/summarize_fangdi_counts.py \
 7. 点击右下角的 `开始`
 8. 在 SSH 里用 `tail -f` 盯住结果文件
 
+## 16. 导出全量“区 -> 板块”字典
+
+如果你准备试全量运行，不要手工维护板块名。先从网站当前下拉框导出一份字典。
+
+先在服务器上生成导出脚本：
+
+```bash
+cd /root/work/fangdi-data
+. .venv/bin/activate
+python scripts/render_fangdi_dimensions_exporter.py \
+  /root/fangdi-data/generated/fangdi-dimensions-exporter.js
+```
+
+然后在远程桌面的浏览器里：
+
+1. 打开 `fangdi` 查询页
+2. 手工完成一次解锁
+3. 打开 DevTools Console
+4. 把 `/root/fangdi-data/generated/fangdi-dimensions-exporter.js` 的内容粘进去执行
+5. 右下角会出现 `Fangdi Dimensions Exporter`
+6. 点击 `开始导出`
+
+跑完后，浏览器会自动下载：
+
+- `fangdi-dimensions.json`
+
+这份文件里会包含：
+
+- 全部区
+- 每个区当前网站里真实存在的板块
+- 当前网站里的挂牌时间选项
+
+## 17. 把导出的字典转成可跑配置
+
+假设你把导出的文件放到了服务器上的：
+
+- `/root/fangdi-data/input/fangdi-dimensions.json`
+
+可以执行：
+
+```bash
+mkdir -p /root/fangdi-data/input
+
+cd /root/work/fangdi-data
+. .venv/bin/activate
+python scripts/build_fangdi_config_from_dimensions.py \
+  /root/work/fangdi-data/config/fangdi-poc.sample.json \
+  /root/fangdi-data/input/fangdi-dimensions.json \
+  /root/fangdi-data/config/fangdi-full.json
+```
+
+会生成：
+
+- `/root/fangdi-data/config/fangdi-full.json`
+
+这份配置会：
+
+- 继承现有 runner / OCR / 结果文件配置
+- 使用导出得到的全量区板块字典
+- 默认只保留 `15天`、`1个月`、`3个月`、`3个月以上` 这 4 个挂牌时间桶
+
+## 18. 用全量配置生成查询计划
+
+```bash
+cd /root/work/fangdi-data
+. .venv/bin/activate
+python scripts/build_query_plan.py \
+  /root/fangdi-data/config/fangdi-full.json \
+  /root/fangdi-data/generated/query-plan-full.json
+
+python scripts/render_fangdi_userscript.py \
+  /root/fangdi-data/config/fangdi-full.json \
+  /root/fangdi-data/generated/query-plan-full.json \
+  /root/fangdi-data/generated/fangdi-userscript-full.js
+```
+
+然后把 `fangdi-userscript-full.js` 更新到 Firefox 里的 userscript 扩展里，就可以开始跑全量查询。
+
 就按下面顺序做：
 
 1. 复制并编辑配置文件
