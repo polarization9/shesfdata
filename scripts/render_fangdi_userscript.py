@@ -137,6 +137,10 @@ TEMPLATE = r"""// ==UserScript==
     return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
   }
 
+  function firstVisible(candidates) {
+    return candidates.find((el) => el && visible(el)) || candidates.find(Boolean) || null;
+  }
+
   function byCss(selector) {
     return selector ? document.querySelector(selector) : null;
   }
@@ -199,20 +203,73 @@ TEMPLATE = r"""// ==UserScript==
   }
 
   function getDistrictControl() {
-    return byCss(selectors.district_control) || findLabeledControl(labels.district);
+    return firstVisible([
+      byCss(selectors.district_control),
+      document.querySelector('select[name="district"]'),
+      findLabeledControl(labels.district)
+    ]);
   }
 
   function getPlateControl() {
-    return byCss(selectors.plate_control) || findLabeledControl(labels.plate);
+    return firstVisible([
+      byCss(selectors.plate_control),
+      document.querySelector('select[name="region"]'),
+      findLabeledControl(labels.plate)
+    ]);
   }
 
   function getListingAgeControl() {
-    return byCss(selectors.listing_age_control) || findLabeledControl(labels.listing_age);
+    return firstVisible([
+      byCss(selectors.listing_age_control),
+      document.querySelector('select[name="time"]'),
+      findLabeledControl(labels.listing_age)
+    ]);
   }
 
   function fireInputEvents(el) {
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function findRenderedSelect(selectEl) {
+    if (!selectEl) return null;
+    const next = selectEl.nextElementSibling;
+    if (next && next.classList && next.classList.contains("layui-form-select")) {
+      return next;
+    }
+    const parentMatch = selectEl.parentElement && selectEl.parentElement.querySelector(".layui-form-select");
+    return parentMatch || null;
+  }
+
+  async function selectViaRenderedDropdown(selectEl, optionText) {
+    const rendered = findRenderedSelect(selectEl);
+    if (!rendered) {
+      const option = [...selectEl.options].find((item) => normalizeSpace(item.textContent) === optionText);
+      if (!option) {
+        throw new Error(`select option not found: ${optionText}`);
+      }
+      selectEl.value = option.value;
+      fireInputEvents(selectEl);
+      return;
+    }
+
+    const title = rendered.querySelector(".layui-select-title input") || rendered.querySelector(".layui-select-title");
+    if (!title) {
+      throw new Error(`rendered select title not found: ${optionText}`);
+    }
+
+    title.click();
+    await sleep(250);
+
+    const candidates = [...rendered.querySelectorAll("dl dd")]
+      .filter((el) => normalizeSpace(el.textContent) === optionText && !el.classList.contains("layui-disabled"));
+
+    if (!candidates.length) {
+      throw new Error(`select option not found: ${optionText}`);
+    }
+
+    candidates[0].click();
+    await sleep(350);
   }
 
   async function waitFor(predicate, timeoutMs, intervalMs = 200) {
@@ -244,8 +301,7 @@ TEMPLATE = r"""// ==UserScript==
     if (!option) {
       throw new Error(`select option not found: ${text}`);
     }
-    control.value = option.value;
-    fireInputEvents(control);
+    await selectViaRenderedDropdown(control, text);
   }
 
   async function waitForPlateOption(text) {
