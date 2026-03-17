@@ -7,6 +7,10 @@
 - 先在远程桌面里手工解锁 `fangdi`
 - 再通过 Firefox userscript 启动一小批自动查询任务
 
+如果你已经准备从 PoC 进入持续跑数、分析和内容生产阶段，可以继续看：
+
+- `docs/fangdi-analysis-automation.md`
+
 ## 1. 这次新增了哪些文件
 
 - `config/fangdi-poc.sample.json`
