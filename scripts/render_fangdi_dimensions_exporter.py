@@ -17,15 +17,35 @@ TEMPLATE = r"""(() => {
   };
 
   function getDistrictControl() {
-    return document.querySelector(DISTRICT_SELECTOR);
+    return document.querySelector(DISTRICT_SELECTOR) || document.querySelector('select[name="district"]');
   }
 
   function getPlateControl() {
-    return document.querySelector(PLATE_SELECTOR);
+    return (
+      document.querySelector(PLATE_SELECTOR) ||
+      document.querySelector('select[name="region"]') ||
+      document.evaluate(
+        '(//*[contains(normalize-space(.), "所属板块")]/following::select[1])[1]',
+        document,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null
+      ).singleNodeValue
+    );
   }
 
   function getListingAgeControl() {
-    return document.querySelector(LISTING_AGE_SELECTOR);
+    return (
+      document.querySelector(LISTING_AGE_SELECTOR) ||
+      document.querySelector('select[name="time"]') ||
+      document.evaluate(
+        '(//*[contains(normalize-space(.), "挂牌时间")]/following::select[1])[1]',
+        document,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null
+      ).singleNodeValue
+    );
   }
 
   function normalizeSpace(text) {
@@ -119,16 +139,14 @@ TEMPLATE = r"""(() => {
 
   async function main() {
     const district = getDistrictControl();
-    const plate = getPlateControl();
-    const listingAge = getListingAgeControl();
-    if (!visible(district) || !visible(plate) || !visible(listingAge)) {
-      throw new Error("未找到 district / regionid / timeVal 这三个控件");
+    if (!visible(district)) {
+      throw new Error("未找到 district 控件");
     }
 
     const districtOptions = optionSnapshot(district);
-    const listingAgeOptions = optionSnapshot(listingAge);
     const originalDistrictValue = district.value;
-    const originalPlateSig = signature(plate);
+    const initialPlate = getPlateControl();
+    const originalPlateSig = initialPlate ? signature(initialPlate) : "";
 
     const districts = [];
     updateOverlay("导出中", `共 ${districtOptions.length} 个区`);
@@ -137,7 +155,8 @@ TEMPLATE = r"""(() => {
       const item = districtOptions[i];
       updateOverlay("导出中", `${i + 1}/${districtOptions.length} ${item.name}`);
 
-      const previousSig = signature(plate);
+      const currentPlate = getPlateControl();
+      const previousSig = currentPlate ? signature(currentPlate) : "";
       await setDistrict(district, item);
       await sleep(600);
 
@@ -163,6 +182,9 @@ TEMPLATE = r"""(() => {
         plates: refreshed.items
       });
     }
+
+    const listingAge = getListingAgeControl();
+    const listingAgeOptions = listingAge ? optionSnapshot(listingAge) : [];
 
     const payload = {
       generated_at: new Date().toISOString(),
