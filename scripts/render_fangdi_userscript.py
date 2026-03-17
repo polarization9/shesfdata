@@ -390,12 +390,45 @@ TEMPLATE = r"""// ==UserScript==
     };
   }
 
+  function currentResultSignature() {
+    const rowTexts = [...document.querySelectorAll("table tbody tr")]
+      .filter((row) => visible(row))
+      .slice(0, 5)
+      .map((row) => normalizeSpace(row.innerText || row.textContent || ""))
+      .filter(Boolean);
+
+    const pagerTexts = [...document.querySelectorAll(".layui-laypage, .page, .pagination")]
+      .filter((el) => visible(el))
+      .slice(0, 2)
+      .map((el) => normalizeSpace(el.innerText || el.textContent || ""))
+      .filter(Boolean);
+
+    return [...rowTexts, ...pagerTexts].join(" || ");
+  }
+
+  function formMatchesTask(task) {
+    const snapshot = currentFormSnapshot();
+    return (
+      snapshot.district_text === task.district &&
+      snapshot.plate_text === task.plate &&
+      snapshot.listing_age_text === task.listing_age
+    );
+  }
+
   async function ocrCaptcha() {
     return httpJson(`${CONFIG.api_base}/ocr`, { image_data_url: captureCaptchaDataUrl() });
   }
 
   async function appendResult(payload) {
     return httpJson(`${CONFIG.api_base}/append-result`, payload);
+  }
+
+  function peekLastAlert() {
+    try {
+      return localStorage.getItem(ALERT_KEY) || "";
+    } catch {
+      return "";
+    }
   }
 
   function readCount() {
@@ -417,11 +450,12 @@ TEMPLATE = r"""// ==UserScript==
     return {
       count: match ? Number(match[1]) : urlCount,
       pageCount: urlPageCount,
+      urlCount,
       text
     };
   }
 
-  async function waitForSubmissionOutcome() {
+  async function waitForSubmissionOutcome(task) {
     const settleMs = CONFIG.runner.post_submit_settle_ms || 2500;
     const waitMs = CONFIG.runner.result_wait_ms || 8000;
 
@@ -429,10 +463,22 @@ TEMPLATE = r"""// ==UserScript==
 
     const found = await waitFor(() => {
       const summary = readCount();
-      if (summary.count !== null) {
+      const alertMessage = peekLastAlert();
+      const currentSignature = currentResultSignature();
+      const formStillMatches = formMatchesTask(task);
+      const urlChanged = location.href !== (task.pre_submit_page_url || "");
+      const countChanged = summary.count !== (task.pre_submit_count ?? null);
+      const pageCountChanged = summary.pageCount !== (task.pre_submit_page_count ?? null);
+      const signatureChanged = currentSignature && currentSignature !== (task.pre_submit_result_signature || "");
+      const pageAdvanced = urlChanged || countChanged || pageCountChanged || signatureChanged;
+
+      if (summary.count !== null && formStillMatches && pageAdvanced) {
         return { kind: "success", summary };
       }
       if (captchaErrorRe.test(summary.text || "")) {
+        return { kind: "captcha_error", summary };
+      }
+      if (captchaErrorRe.test(alertMessage || "") || /验证码/.test(alertMessage || "")) {
         return { kind: "captcha_error", summary };
       }
       return null;
@@ -442,7 +488,24 @@ TEMPLATE = r"""// ==UserScript==
       return found;
     }
 
-    return { kind: "unknown", summary: readCount() };
+    const finalSummary = readCount();
+    const finalAlert = peekLastAlert();
+    const currentSignature = currentResultSignature();
+    const urlChanged = location.href !== (task.pre_submit_page_url || "");
+    const countChanged = finalSummary.count !== (task.pre_submit_count ?? null);
+    const pageCountChanged = finalSummary.pageCount !== (task.pre_submit_page_count ?? null);
+    const signatureChanged = currentSignature && currentSignature !== (task.pre_submit_result_signature || "");
+    const pageAdvanced = urlChanged || countChanged || pageCountChanged || signatureChanged;
+
+    if (captchaErrorRe.test(finalAlert || "") || /验证码/.test(finalAlert || "")) {
+      return { kind: "captcha_error", summary: finalSummary };
+    }
+
+    if (finalSummary.count !== null && !pageAdvanced) {
+      return { kind: "stale_result", summary: finalSummary };
+    }
+
+    return { kind: "unknown", summary: finalSummary };
   }
 
   function refreshCaptcha() {
@@ -511,7 +574,7 @@ TEMPLATE = r"""// ==UserScript==
       return saveState({ active: false, phase: "idle", lastError: "missing currentTask after refresh" });
     }
 
-    const outcome = await waitForSubmissionOutcome();
+    const outcome = await waitForSubmissionOutcome(task);
     const summary = outcome.summary;
     const alertMessage = popLastAlert();
     const basePayload = {
@@ -569,6 +632,42 @@ TEMPLATE = r"""// ==UserScript==
         phase: "prepare",
         currentTask: { ...task, captcha_attempt: attempts + 1 },
         lastMessage: `${task.district} / ${task.plate} / ${task.listing_age} 验证码错误，重试`,
+        lastError: ""
+      });
+      scheduleTick(rand(CONFIG.runner.after_filter_ms));
+      return;
+    }
+
+    if (outcome.kind === "stale_result") {
+      const attempts = task.captcha_attempt || 1;
+      if (attempts >= CONFIG.runner.max_captcha_refresh) {
+        await appendResult({
+          ...basePayload,
+          status: "stale_result_exhausted",
+          count: summary.count,
+          page_count: summary.pageCount,
+          page_excerpt: (summary.text || "").slice(0, 1000)
+        });
+        const next = saveState({
+          index: state.index + 1,
+          phase: "prepare",
+          currentTask: null,
+          failureCount: (state.failureCount || 0) + 1,
+          lastMessage: `${task.district} / ${task.plate} / ${task.listing_age} 结果未刷新，重试耗尽`,
+          lastError: ""
+        });
+        if (next.index >= PLAN.items.length) {
+          saveState({ active: false, phase: "done", lastMessage: "全部任务完成" });
+        } else {
+          scheduleTick(rand(CONFIG.runner.between_queries_ms));
+        }
+        return;
+      }
+
+      saveState({
+        phase: "prepare",
+        currentTask: { ...task, captcha_attempt: attempts + 1 },
+        lastMessage: `${task.district} / ${task.plate} / ${task.listing_age} 页面结果未刷新，重试`,
         lastError: ""
       });
       scheduleTick(rand(CONFIG.runner.after_filter_ms));
@@ -723,13 +822,18 @@ TEMPLATE = r"""// ==UserScript==
       captchaInput.value = guess;
       fireInputEvents(captchaInput);
 
+      const preSubmitSummary = readCount();
       saveState({
         phase: "submitted",
         currentTask: {
           ...task,
           captcha_guess: guess,
           captcha_attempt: task.captcha_attempt,
-          form_snapshot: currentFormSnapshot()
+          form_snapshot: currentFormSnapshot(),
+          pre_submit_count: preSubmitSummary.count,
+          pre_submit_page_count: preSubmitSummary.pageCount,
+          pre_submit_page_url: location.href,
+          pre_submit_result_signature: currentResultSignature()
         },
         lastMessage: `提交中 ${task.district} / ${task.plate} / ${task.listing_age}`,
         lastError: ""

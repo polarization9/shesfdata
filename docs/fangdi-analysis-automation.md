@@ -858,3 +858,29 @@ python scripts/render_fangdi_cards.py \
   /root/fangdi-data/output/fangdi/$(date +%F)/insights.json \
   /root/fangdi-data/output/fangdi/$(date +%F)/cards
 ```
+
+### 20.6 一键后处理
+
+如果你不想每天手动拼上面这些命令，现在也可以直接用一键脚本：
+
+```bash
+cd /root/work/fangdi-data
+bash scripts/run_fangdi_postprocess.sh
+```
+
+它会自动完成：
+
+- 归档原始 `jsonl`
+- 生成标准化明细和失败表
+- 生成区级 / 板块级指标
+- 生成历史对比增强表
+- 生成 `insights.json`
+- 生成标题候选和文案草稿
+- 如果安装了 `matplotlib`，再自动生成卡片 PNG
+
+如果你只是想先验证文字链路，不想生成图片，可以：
+
+```bash
+cd /root/work/fangdi-data
+bash scripts/run_fangdi_postprocess.sh --skip-cards
+```
