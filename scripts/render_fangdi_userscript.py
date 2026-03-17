@@ -736,6 +736,10 @@ TEMPLATE = r"""// ==UserScript==
       });
 
       queryButton.click();
+      // Some captcha failures do not navigate away; they only refresh the captcha
+      // in place after alert/check() handling. Schedule the next state check either
+      // way so the submitted phase can recover on same-page failures.
+      scheduleTick(200);
       return;
     }
 
