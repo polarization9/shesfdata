@@ -16,12 +16,19 @@ TEMPLATE = r"""(() => {
     return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
   };
 
+  function firstVisible(candidates) {
+    return candidates.find((el) => el && visible(el)) || candidates.find(Boolean) || null;
+  }
+
   function getDistrictControl() {
-    return document.querySelector(DISTRICT_SELECTOR) || document.querySelector('select[name="district"]');
+    return firstVisible([
+      document.querySelector(DISTRICT_SELECTOR),
+      document.querySelector('select[name="district"]')
+    ]);
   }
 
   function getPlateControl() {
-    return (
+    return firstVisible([
       document.querySelector(PLATE_SELECTOR) ||
       document.querySelector('select[name="region"]') ||
       document.evaluate(
@@ -31,11 +38,11 @@ TEMPLATE = r"""(() => {
         XPathResult.FIRST_ORDERED_NODE_TYPE,
         null
       ).singleNodeValue
-    );
+    ]);
   }
 
   function getListingAgeControl() {
-    return (
+    return firstVisible([
       document.querySelector(LISTING_AGE_SELECTOR) ||
       document.querySelector('select[name="time"]') ||
       document.evaluate(
@@ -45,7 +52,7 @@ TEMPLATE = r"""(() => {
         XPathResult.FIRST_ORDERED_NODE_TYPE,
         null
       ).singleNodeValue
-    );
+    ]);
   }
 
   function normalizeSpace(text) {
@@ -139,7 +146,7 @@ TEMPLATE = r"""(() => {
 
   async function main() {
     const district = getDistrictControl();
-    if (!visible(district)) {
+    if (!district) {
       throw new Error("未找到 district 控件");
     }
 
