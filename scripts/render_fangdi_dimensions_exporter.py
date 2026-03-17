@@ -79,6 +79,47 @@ TEMPLATE = r"""(() => {
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
+  function findRenderedSelect(selectEl) {
+    if (!selectEl) return null;
+    const next = selectEl.nextElementSibling;
+    if (next && next.classList && next.classList.contains("layui-form-select")) {
+      return next;
+    }
+    const parentMatch = selectEl.parentElement && selectEl.parentElement.querySelector(".layui-form-select");
+    return parentMatch || null;
+  }
+
+  async function selectViaRenderedDropdown(selectEl, optionText) {
+    const rendered = findRenderedSelect(selectEl);
+    if (!rendered) {
+      const option = [...selectEl.options].find((item) => normalizeSpace(item.textContent) === optionText);
+      if (!option) {
+        throw new Error(`district option not found: ${optionText}`);
+      }
+      selectEl.value = option.value;
+      fireEvents(selectEl);
+      return option.value;
+    }
+
+    const title = rendered.querySelector(".layui-select-title input") || rendered.querySelector(".layui-select-title");
+    if (!title) {
+      throw new Error("district rendered title not found");
+    }
+    title.click();
+    await sleep(250);
+
+    const candidates = [...rendered.querySelectorAll("dl dd")]
+      .filter((el) => normalizeSpace(el.textContent) === optionText && !el.classList.contains("layui-disabled"));
+
+    if (!candidates.length) {
+      throw new Error(`district rendered option not found: ${optionText}`);
+    }
+
+    candidates[0].click();
+    await sleep(350);
+    return selectEl.value;
+  }
+
   async function waitFor(predicate, timeoutMs, intervalMs = 250) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -114,8 +155,7 @@ TEMPLATE = r"""(() => {
   }
 
   async function setDistrict(control, option) {
-    control.value = option.value;
-    fireEvents(control);
+    await selectViaRenderedDropdown(control, option.name);
   }
 
   async function waitForPlateRefresh(expectedDistrictValue, previousSig, allowSameSig = false) {
