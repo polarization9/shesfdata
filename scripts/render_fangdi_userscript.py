@@ -36,12 +36,12 @@ TEMPLATE = r"""// ==UserScript==
   (function patchAlert() {
     if (window.__fangdiAlertPatched) return;
     window.__fangdiAlertPatched = true;
-    const originalAlert = window.alert;
     window.alert = function (message) {
       try {
         localStorage.setItem(ALERT_KEY, String(message || ""));
       } catch {}
-      return originalAlert.call(window, message);
+      console.warn("fangdi alert intercepted:", message);
+      return undefined;
     };
   })();
 
