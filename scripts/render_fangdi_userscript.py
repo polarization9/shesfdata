@@ -281,6 +281,17 @@ TEMPLATE = r"""// ==UserScript==
     return parentMatch || null;
   }
 
+  function renderedSelectedText(selectEl) {
+    const rendered = findRenderedSelect(selectEl);
+    if (!rendered) return "";
+    const titleInput = rendered.querySelector(".layui-select-title input");
+    if (titleInput && normalizeSpace(titleInput.value || "")) {
+      return normalizeSpace(titleInput.value || "");
+    }
+    const title = rendered.querySelector(".layui-select-title");
+    return title ? normalizeSpace(title.innerText || title.textContent || "") : "";
+  }
+
   function renderedSelectHasOption(selectEl, optionText) {
     const rendered = findRenderedSelect(selectEl);
     if (!rendered) return true;
@@ -344,31 +355,70 @@ TEMPLATE = r"""// ==UserScript==
     }, 15000);
   }
 
+  function snapshotFieldForControl(control, snapshot) {
+    if (!control || !snapshot) return "";
+    if (control.id === "district" || control.name === "district") {
+      return snapshot.district_text || "";
+    }
+    if (control.id === "regionid" || control.name === "region") {
+      return snapshot.plate_text || "";
+    }
+    if (control.id === "timeVal" || control.name === "time") {
+      return snapshot.listing_age_text || "";
+    }
+    return "";
+  }
+
   async function setSelectValue(control, text) {
     const option = [...control.options].find((item) => normalizeSpace(item.textContent) === text);
     if (!option) {
       throw new Error(`select option not found: ${text}`);
     }
+    const targetValue = option.value;
 
-    await selectViaRenderedDropdown(control, text);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await selectViaRenderedDropdown(control, text);
 
-    const applied = await waitFor(() => {
-      const snapshot = currentFormSnapshot();
-      if (control === getDistrictControl()) {
-        return snapshot.district_text === text;
-      }
-      if (control === getPlateControl()) {
-        return snapshot.plate_text === text;
-      }
-      if (control === getListingAgeControl()) {
-        return snapshot.listing_age_text === text;
-      }
-      return false;
-    }, 3000, 150);
+      const applied = await waitFor(() => {
+        const snapshot = currentFormSnapshot();
+        const fieldText = snapshotFieldForControl(control, snapshot);
+        if (fieldText === text) return true;
+        if (normalizeSpace(renderedSelectedText(control)) === text) return true;
+        if ((control.value || "") === targetValue) return true;
+        return false;
+      }, 3500, 150);
 
-    if (!applied) {
-      throw new Error(`select value not applied: ${text}`);
+      if (applied) {
+        return;
+      }
+
+      control.value = targetValue;
+      fireInputEvents(control);
+      await sleep(300);
     }
+
+    throw new Error(`select value not applied: ${text}`);
+  }
+
+  async function ensurePlateSelection(task) {
+    const plateControl = await waitForPlateOption(task.plate);
+    if (!plateControl) {
+      return { ok: false, reason: "missing_option" };
+    }
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await setSelectValue(plateControl, task.plate);
+      const stable = await waitFor(() => {
+        const snapshot = currentFormSnapshot();
+        return snapshot.plate_text === task.plate && snapshot.plate_value ? snapshot : null;
+      }, 4000, 150);
+      if (stable) {
+        return { ok: true, control: plateControl };
+      }
+      await sleep(300);
+    }
+
+    return { ok: false, reason: "not_applied" };
   }
 
   async function waitForPlateOption(text) {
@@ -855,8 +905,8 @@ TEMPLATE = r"""// ==UserScript==
       await setSelectValue(ready.district, task.district);
       await sleep(rand(CONFIG.runner.after_filter_ms));
 
-      const plateControl = await waitForPlateOption(task.plate);
-      if (!plateControl) {
+      const plateSelection = await ensurePlateSelection(task);
+      if (!plateSelection.ok && plateSelection.reason === "missing_option") {
         await failCurrentTaskAndContinue(
           state,
           task,
@@ -865,8 +915,17 @@ TEMPLATE = r"""// ==UserScript==
         );
         return;
       }
+      if (!plateSelection.ok) {
+        saveState({
+          phase: "prepare",
+          currentTask: { ...task, captcha_attempt: task.captcha_attempt },
+          lastMessage: `${task.district} / ${task.plate} 板块选择未生效，重试`,
+          lastError: ""
+        });
+        scheduleTick(rand(CONFIG.runner.after_filter_ms));
+        return;
+      }
 
-      await setSelectValue(plateControl, task.plate);
       await sleep(rand(CONFIG.runner.after_filter_ms));
       await setSelectValue(getListingAgeControl(), task.listing_age);
       await sleep(rand(CONFIG.runner.after_filter_ms));
