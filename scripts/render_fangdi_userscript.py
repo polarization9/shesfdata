@@ -281,6 +281,14 @@ TEMPLATE = r"""// ==UserScript==
     return parentMatch || null;
   }
 
+  function renderedSelectHasOption(selectEl, optionText) {
+    const rendered = findRenderedSelect(selectEl);
+    if (!rendered) return true;
+    const candidates = [...rendered.querySelectorAll("dl dd")]
+      .filter((el) => normalizeSpace(el.textContent) === optionText && !el.classList.contains("layui-disabled"));
+    return candidates.length > 0;
+  }
+
   async function selectViaRenderedDropdown(selectEl, optionText) {
     const rendered = findRenderedSelect(selectEl);
     if (!rendered) {
@@ -341,7 +349,26 @@ TEMPLATE = r"""// ==UserScript==
     if (!option) {
       throw new Error(`select option not found: ${text}`);
     }
+
     await selectViaRenderedDropdown(control, text);
+
+    const applied = await waitFor(() => {
+      const snapshot = currentFormSnapshot();
+      if (control === getDistrictControl()) {
+        return snapshot.district_text === text;
+      }
+      if (control === getPlateControl()) {
+        return snapshot.plate_text === text;
+      }
+      if (control === getListingAgeControl()) {
+        return snapshot.listing_age_text === text;
+      }
+      return false;
+    }, 3000, 150);
+
+    if (!applied) {
+      throw new Error(`select value not applied: ${text}`);
+    }
   }
 
   async function waitForPlateOption(text) {
@@ -349,7 +376,8 @@ TEMPLATE = r"""// ==UserScript==
       const control = getPlateControl();
       if (!control || control.tagName.toLowerCase() !== "select") return null;
       const option = [...control.options].find((item) => normalizeSpace(item.textContent) === text);
-      return option ? control : null;
+      if (!option) return null;
+      return renderedSelectHasOption(control, text) ? control : null;
     }, 8000, 250);
   }
 
@@ -413,6 +441,28 @@ TEMPLATE = r"""// ==UserScript==
       snapshot.plate_text === task.plate &&
       snapshot.listing_age_text === task.listing_age
     );
+  }
+
+  function snapshotMatchesTask(snapshot, task) {
+    return (
+      snapshot &&
+      snapshot.district_text === task.district &&
+      snapshot.plate_text === task.plate &&
+      snapshot.listing_age_text === task.listing_age
+    );
+  }
+
+  function currentQueryParams() {
+    try {
+      const params = new URL(location.href).searchParams;
+      return {
+        district: params.get("district") || "",
+        region: params.get("region") || "",
+        time: params.get("time") || ""
+      };
+    } catch {
+      return { district: "", region: "", time: "" };
+    }
   }
 
   async function ocrCaptcha() {
@@ -577,6 +627,8 @@ TEMPLATE = r"""// ==UserScript==
     const outcome = await waitForSubmissionOutcome(task);
     const summary = outcome.summary;
     const alertMessage = popLastAlert();
+    const queryParams = currentQueryParams();
+    const currentSnapshot = currentFormSnapshot();
     const basePayload = {
       task_id: task.task_id,
       district: task.district,
@@ -589,6 +641,47 @@ TEMPLATE = r"""// ==UserScript==
       alert_message: alertMessage,
       form_snapshot: task.form_snapshot || null
     };
+
+    const submittedWithoutPlate =
+      !queryParams.region ||
+      !currentSnapshot.plate_value ||
+      !currentSnapshot.plate_text;
+
+    if (submittedWithoutPlate) {
+      const attempts = task.captcha_attempt || 1;
+      if (attempts >= CONFIG.runner.max_captcha_refresh) {
+        await appendResult({
+          ...basePayload,
+          status: "submission_mismatch_exhausted",
+          count: summary.count,
+          page_count: summary.pageCount,
+          page_excerpt: (summary.text || "").slice(0, 1000)
+        });
+        const next = saveState({
+          index: state.index + 1,
+          phase: "prepare",
+          currentTask: null,
+          failureCount: (state.failureCount || 0) + 1,
+          lastMessage: `${task.district} / ${task.plate} / ${task.listing_age} 提交时板块丢失，重试耗尽`,
+          lastError: ""
+        });
+        if (next.index >= PLAN.items.length) {
+          saveState({ active: false, phase: "done", lastMessage: "全部任务完成" });
+        } else {
+          scheduleTick(rand(CONFIG.runner.between_queries_ms));
+        }
+        return;
+      }
+
+      saveState({
+        phase: "prepare",
+        currentTask: { ...task, captcha_attempt: attempts + 1 },
+        lastMessage: `${task.district} / ${task.plate} / ${task.listing_age} 提交时板块为空，重试`,
+        lastError: ""
+      });
+      scheduleTick(rand(CONFIG.runner.after_filter_ms));
+      return;
+    }
 
     if (outcome.kind === "success" && summary.count !== null) {
       await appendResult({ ...basePayload, status: "success", count: summary.count, page_count: summary.pageCount });
@@ -800,6 +893,22 @@ TEMPLATE = r"""// ==UserScript==
     }
 
     for (let retries = 0; retries < CONFIG.runner.max_captcha_refresh; retries += 1) {
+      const stableSnapshot = await waitFor(() => {
+        const snapshot = currentFormSnapshot();
+        return snapshotMatchesTask(snapshot, task) ? snapshot : null;
+      }, 4000, 150);
+
+      if (!stableSnapshot) {
+        saveState({
+          phase: "prepare",
+          currentTask: { ...task, captcha_attempt: task.captcha_attempt },
+          lastMessage: `${task.district} / ${task.plate} / ${task.listing_age} 表单未稳定，重试`,
+          lastError: ""
+        });
+        scheduleTick(rand(CONFIG.runner.after_filter_ms));
+        return;
+      }
+
       const ocr = await ocrCaptcha();
       const guess = (ocr.best || "").trim();
 
@@ -822,6 +931,18 @@ TEMPLATE = r"""// ==UserScript==
       captchaInput.value = guess;
       fireInputEvents(captchaInput);
 
+      const finalSnapshot = currentFormSnapshot();
+      if (!snapshotMatchesTask(finalSnapshot, task)) {
+        saveState({
+          phase: "prepare",
+          currentTask: { ...task, captcha_attempt: task.captcha_attempt },
+          lastMessage: `${task.district} / ${task.plate} / ${task.listing_age} 提交前表单回退，重试`,
+          lastError: ""
+        });
+        scheduleTick(rand(CONFIG.runner.after_filter_ms));
+        return;
+      }
+
       const preSubmitSummary = readCount();
       saveState({
         phase: "submitted",
@@ -829,7 +950,7 @@ TEMPLATE = r"""// ==UserScript==
           ...task,
           captcha_guess: guess,
           captcha_attempt: task.captcha_attempt,
-          form_snapshot: currentFormSnapshot(),
+          form_snapshot: finalSnapshot,
           pre_submit_count: preSubmitSummary.count,
           pre_submit_page_count: preSubmitSummary.pageCount,
           pre_submit_page_url: location.href,
