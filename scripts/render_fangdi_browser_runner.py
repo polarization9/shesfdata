@@ -63,7 +63,30 @@ TEMPLATE = r"""
   }
 
   function getCaptchaInput() {
-    return byCss(selectors.captcha_input) || findLabeledControl(labels.captcha);
+    if (selectors.captcha_input) {
+      return byCss(selectors.captcha_input);
+    }
+
+    const captchaImage = getCaptchaImage();
+    if (captchaImage) {
+      const inputs = [...document.querySelectorAll("input")].filter((el) => visible(el) && el !== captchaImage);
+      const imgRect = captchaImage.getBoundingClientRect();
+      const nearby = inputs
+        .map((el) => {
+          const r = el.getBoundingClientRect();
+          const dx = Math.abs(r.right - imgRect.left);
+          const dy = Math.abs((r.top + r.height / 2) - (imgRect.top + imgRect.height / 2));
+          return { el, score: dx + dy * 2, r };
+        })
+        .filter(({ r }) => r.width >= 40 && r.width <= 160 && r.height >= 20 && r.height <= 60 && r.left < imgRect.left + 20);
+
+      if (nearby.length) {
+        nearby.sort((a, b) => a.score - b.score);
+        return nearby[0].el;
+      }
+    }
+
+    return findLabeledControl(labels.captcha);
   }
 
   function getCaptchaImage() {

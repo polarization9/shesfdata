@@ -37,6 +37,34 @@ TEMPLATE = r"""
     );
   }
 
+  function getCaptchaImage() {
+    return byCss(selectors.captcha_image) || xpathFirst(`(//*[contains(normalize-space(.), "${labels.captcha}")]/following::img[1])[1]`);
+  }
+
+  function getCaptchaInput() {
+    if (selectors.captcha_input) {
+      return byCss(selectors.captcha_input);
+    }
+    const captchaImage = getCaptchaImage();
+    if (captchaImage) {
+      const imgRect = captchaImage.getBoundingClientRect();
+      const inputs = [...document.querySelectorAll("input")].filter((el) => visible(el));
+      const nearby = inputs
+        .map((el) => {
+          const r = el.getBoundingClientRect();
+          const dx = Math.abs(r.right - imgRect.left);
+          const dy = Math.abs((r.top + r.height / 2) - (imgRect.top + imgRect.height / 2));
+          return { el, score: dx + dy * 2, r };
+        })
+        .filter(({ r }) => r.width >= 40 && r.width <= 160 && r.height >= 20 && r.height <= 60 && r.left < imgRect.left + 20);
+      if (nearby.length) {
+        nearby.sort((a, b) => a.score - b.score);
+        return nearby[0].el;
+      }
+    }
+    return findLabeledControl(labels.captcha);
+  }
+
   function findQueryButton() {
     if (selectors.query_button) {
       return byCss(selectors.query_button);
@@ -52,8 +80,8 @@ TEMPLATE = r"""
     district: byCss(selectors.district_control) || findLabeledControl(labels.district),
     plate: byCss(selectors.plate_control) || findLabeledControl(labels.plate),
     listing_age: byCss(selectors.listing_age_control) || findLabeledControl(labels.listing_age),
-    captcha_input: byCss(selectors.captcha_input) || findLabeledControl(labels.captcha),
-    captcha_image: byCss(selectors.captcha_image) || xpathFirst(`(//*[contains(normalize-space(.), "${labels.captcha}")]/following::img[1])[1]`),
+    captcha_input: getCaptchaInput(),
+    captcha_image: getCaptchaImage(),
     query_button: findQueryButton()
   };
 
