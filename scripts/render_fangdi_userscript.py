@@ -11,6 +11,7 @@ TEMPLATE = r"""// ==UserScript==
 // @description  Persisted count-query runner for fangdi.com.cn
 // @match        https://www.fangdi.com.cn/old_house/*
 // @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
 // @connect      127.0.0.1
 // @connect      localhost
 // ==/UserScript==
@@ -36,13 +37,52 @@ TEMPLATE = r"""// ==UserScript==
   (function patchAlert() {
     if (window.__fangdiAlertPatched) return;
     window.__fangdiAlertPatched = true;
+
+    const patchFnSource = `
+      (() => {
+        if (window.__fangdiPageAlertPatched) return;
+        window.__fangdiPageAlertPatched = true;
+        const alertKey = ${JSON.stringify(ALERT_KEY)};
+        const originalAlert = window.alert;
+        window.alert = function(message) {
+          try {
+            localStorage.setItem(alertKey, String(message || ""));
+          } catch (e) {}
+          if (/验证码/.test(String(message || ""))) {
+            console.warn("fangdi alert suppressed:", message);
+            return undefined;
+          }
+          return originalAlert.call(window, message);
+        };
+      })();
+    `;
+
+    try {
+      const script = document.createElement("script");
+      script.textContent = patchFnSource;
+      (document.head || document.documentElement).appendChild(script);
+      script.remove();
+    } catch (error) {
+      console.warn("inject page alert patch failed:", error);
+    }
+
+    const localOriginalAlert = window.alert;
     window.alert = function (message) {
       try {
         localStorage.setItem(ALERT_KEY, String(message || ""));
       } catch {}
-      console.warn("fangdi alert intercepted:", message);
-      return undefined;
+      if (/验证码/.test(String(message || ""))) {
+        console.warn("fangdi userscript alert suppressed:", message);
+        return undefined;
+      }
+      return localOriginalAlert.call(window, message);
     };
+
+    try {
+      if (typeof unsafeWindow !== "undefined" && unsafeWindow) {
+        unsafeWindow.alert = window.alert;
+      }
+    } catch {}
   })();
 
   function popLastAlert() {
