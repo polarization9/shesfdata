@@ -29,6 +29,8 @@ TEMPLATE = r"""// ==UserScript==
   const selectors = CONFIG.runner.selectors || {};
   const successRe = new RegExp(CONFIG.runner.success_pattern);
   const captchaErrorRe = new RegExp(CONFIG.runner.captcha_error_pattern);
+  const STABILITY_INTERVAL_MS = 500;
+  const STABILITY_READS_REQUIRED = 3;
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const rand = ([minMs, maxMs]) => minMs + Math.floor(Math.random() * (maxMs - minMs + 1));
@@ -341,6 +343,32 @@ TEMPLATE = r"""// ==UserScript==
     return null;
   }
 
+  async function waitForStableValue(readValue, isAcceptable, timeoutMs, intervalMs = STABILITY_INTERVAL_MS, requiredReads = STABILITY_READS_REQUIRED) {
+    const start = Date.now();
+    let streak = 0;
+    let lastSerialized = "";
+    while (Date.now() - start < timeoutMs) {
+      const value = readValue();
+      if (isAcceptable(value)) {
+        const serialized = JSON.stringify(value);
+        if (serialized === lastSerialized) {
+          streak += 1;
+        } else {
+          streak = 1;
+          lastSerialized = serialized;
+        }
+        if (streak >= requiredReads) {
+          return value;
+        }
+      } else {
+        streak = 0;
+        lastSerialized = "";
+      }
+      await sleep(intervalMs);
+    }
+    return null;
+  }
+
   async function waitForReady() {
     return waitFor(() => {
       const district = getDistrictControl();
@@ -379,14 +407,21 @@ TEMPLATE = r"""// ==UserScript==
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await selectViaRenderedDropdown(control, text);
 
-      const applied = await waitFor(() => {
-        const snapshot = currentFormSnapshot();
-        const fieldText = snapshotFieldForControl(control, snapshot);
-        if (fieldText === text) return true;
-        if (normalizeSpace(renderedSelectedText(control)) === text) return true;
-        if ((control.value || "") === targetValue) return true;
-        return false;
-      }, 3500, 150);
+      const applied = await waitForStableValue(
+        () => {
+          const snapshot = currentFormSnapshot();
+          return {
+            fieldText: snapshotFieldForControl(control, snapshot),
+            renderedText: normalizeSpace(renderedSelectedText(control)),
+            controlValue: control.value || ""
+          };
+        },
+        (value) => value &&
+          value.fieldText === text &&
+          (!value.renderedText || value.renderedText === text) &&
+          value.controlValue === targetValue,
+        4500
+      );
 
       if (applied) {
         return;
@@ -408,10 +443,17 @@ TEMPLATE = r"""// ==UserScript==
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await setSelectValue(plateControl, task.plate);
-      const stable = await waitFor(() => {
-        const snapshot = currentFormSnapshot();
-        return snapshot.plate_text === task.plate && snapshot.plate_value ? snapshot : null;
-      }, 4000, 150);
+      const stable = await waitForStableValue(
+        () => currentFormSnapshot(),
+        (snapshot) =>
+          snapshot &&
+          snapshot.district_text === task.district &&
+          (!snapshot.district_rendered_text || snapshot.district_rendered_text === task.district) &&
+          snapshot.plate_value &&
+          snapshot.plate_text === task.plate &&
+          (!snapshot.plate_rendered_text || snapshot.plate_rendered_text === task.plate),
+        5000
+      );
       if (stable) {
         return { ok: true, control: plateControl };
       }
@@ -460,10 +502,13 @@ TEMPLATE = r"""// ==UserScript==
     return {
       district_value: district ? district.value : "",
       district_text: selectedText(district),
+      district_rendered_text: district ? normalizeSpace(renderedSelectedText(district)) : "",
       plate_value: plate ? plate.value : "",
       plate_text: selectedText(plate),
+      plate_rendered_text: plate ? normalizeSpace(renderedSelectedText(plate)) : "",
       listing_age_value: listingAge ? listingAge.value : "",
       listing_age_text: selectedText(listingAge),
+      listing_age_rendered_text: listingAge ? normalizeSpace(renderedSelectedText(listingAge)) : "",
       captcha_value: captchaInput ? (captchaInput.value || "") : ""
     };
   }
@@ -484,12 +529,23 @@ TEMPLATE = r"""// ==UserScript==
     return [...rowTexts, ...pagerTexts].join(" || ");
   }
 
+  function currentPagerSignature() {
+    const pagerTexts = [...document.querySelectorAll(".layui-laypage, .page, .pagination")]
+      .filter((el) => visible(el))
+      .map((el) => normalizeSpace(el.innerText || el.textContent || ""))
+      .filter(Boolean);
+    return pagerTexts.join(" || ");
+  }
+
   function formMatchesTask(task) {
     const snapshot = currentFormSnapshot();
     return (
       snapshot.district_text === task.district &&
+      (!snapshot.district_rendered_text || snapshot.district_rendered_text === task.district) &&
       snapshot.plate_text === task.plate &&
+      (!snapshot.plate_rendered_text || snapshot.plate_rendered_text === task.plate) &&
       snapshot.listing_age_text === task.listing_age
+      && (!snapshot.listing_age_rendered_text || snapshot.listing_age_rendered_text === task.listing_age)
     );
   }
 
@@ -497,9 +553,29 @@ TEMPLATE = r"""// ==UserScript==
     return (
       snapshot &&
       snapshot.district_text === task.district &&
+      (!snapshot.district_rendered_text || snapshot.district_rendered_text === task.district) &&
       snapshot.plate_text === task.plate &&
+      (!snapshot.plate_rendered_text || snapshot.plate_rendered_text === task.plate) &&
       snapshot.listing_age_text === task.listing_age
+      && (!snapshot.listing_age_rendered_text || snapshot.listing_age_rendered_text === task.listing_age)
     );
+  }
+
+  function resultSampleForTask(task) {
+    const summary = readCount();
+    const form = currentFormSnapshot();
+    return {
+      count: summary.count,
+      pageCount: summary.pageCount,
+      urlCount: summary.urlCount,
+      resultSignature: currentResultSignature(),
+      pagerSignature: currentPagerSignature(),
+      form_snapshot: form,
+      query_params: currentQueryParams(),
+      text: summary.text || "",
+      page_url: location.href,
+      form_matches_task: snapshotMatchesTask(form, task)
+    };
   }
 
   function currentQueryParams() {
@@ -561,44 +637,50 @@ TEMPLATE = r"""// ==UserScript==
 
     await sleep(settleMs);
 
-    const found = await waitFor(() => {
-      const summary = readCount();
-      const alertMessage = peekLastAlert();
-      const currentSignature = currentResultSignature();
-      const formStillMatches = formMatchesTask(task);
-      const urlChanged = location.href !== (task.pre_submit_page_url || "");
-      const countChanged = summary.count !== (task.pre_submit_count ?? null);
-      const pageCountChanged = summary.pageCount !== (task.pre_submit_page_count ?? null);
-      const signatureChanged = currentSignature && currentSignature !== (task.pre_submit_result_signature || "");
-      const pageAdvanced = urlChanged || countChanged || pageCountChanged || signatureChanged;
-
-      if (summary.count !== null && formStillMatches && pageAdvanced) {
-        return { kind: "success", summary };
-      }
-      if (captchaErrorRe.test(summary.text || "")) {
-        return { kind: "captcha_error", summary };
-      }
-      if (captchaErrorRe.test(alertMessage || "") || /验证码/.test(alertMessage || "")) {
-        return { kind: "captcha_error", summary };
-      }
-      return null;
-    }, waitMs, 300);
+    const found = await waitForStableValue(
+      () => {
+        const sample = resultSampleForTask(task);
+        const alertMessage = peekLastAlert();
+        const urlChanged = sample.page_url !== (task.pre_submit_page_url || "");
+        const countChanged = sample.count !== (task.pre_submit_count ?? null);
+        const pageCountChanged = sample.pageCount !== (task.pre_submit_page_count ?? null);
+        const resultSignatureChanged = sample.resultSignature && sample.resultSignature !== (task.pre_submit_result_signature || "");
+        const pagerSignatureChanged = sample.pagerSignature && sample.pagerSignature !== (task.pre_submit_pager_signature || "");
+        const pageAdvanced = urlChanged || countChanged || pageCountChanged || resultSignatureChanged || pagerSignatureChanged;
+        return {
+          kind:
+            (captchaErrorRe.test(sample.text || "") || captchaErrorRe.test(alertMessage || "") || /验证码/.test(alertMessage || "")) ? "captcha_error" :
+            (sample.count !== null && sample.form_matches_task && pageAdvanced ? "success" : "pending"),
+          sample,
+          pageAdvanced
+        };
+      },
+      (value) => value && (value.kind === "captcha_error" || value.kind === "success"),
+      waitMs
+    );
 
     if (found) {
-      return found;
+      if (found.kind === "captcha_error") {
+        return { kind: "captcha_error", summary: found.sample };
+      }
+      return { kind: "success", summary: found.sample };
     }
 
-    const finalSummary = readCount();
+    const finalSummary = resultSampleForTask(task);
     const finalAlert = peekLastAlert();
-    const currentSignature = currentResultSignature();
-    const urlChanged = location.href !== (task.pre_submit_page_url || "");
+    const urlChanged = finalSummary.page_url !== (task.pre_submit_page_url || "");
     const countChanged = finalSummary.count !== (task.pre_submit_count ?? null);
     const pageCountChanged = finalSummary.pageCount !== (task.pre_submit_page_count ?? null);
-    const signatureChanged = currentSignature && currentSignature !== (task.pre_submit_result_signature || "");
-    const pageAdvanced = urlChanged || countChanged || pageCountChanged || signatureChanged;
+    const resultSignatureChanged = finalSummary.resultSignature && finalSummary.resultSignature !== (task.pre_submit_result_signature || "");
+    const pagerSignatureChanged = finalSummary.pagerSignature && finalSummary.pagerSignature !== (task.pre_submit_pager_signature || "");
+    const pageAdvanced = urlChanged || countChanged || pageCountChanged || resultSignatureChanged || pagerSignatureChanged;
 
     if (captchaErrorRe.test(finalAlert || "") || /验证码/.test(finalAlert || "")) {
       return { kind: "captcha_error", summary: finalSummary };
+    }
+
+    if (finalSummary.count !== null && pageAdvanced && !finalSummary.form_matches_task) {
+      return { kind: "mismatched_result", summary: finalSummary };
     }
 
     if (finalSummary.count !== null && !pageAdvanced) {
@@ -689,7 +771,8 @@ TEMPLATE = r"""// ==UserScript==
       recorded_at: now(),
       page_url: location.href,
       alert_message: alertMessage,
-      form_snapshot: task.form_snapshot || null
+      form_snapshot: task.form_snapshot || null,
+      current_form_snapshot: currentSnapshot || null
     };
 
     const submittedWithoutPlate =
@@ -811,6 +894,42 @@ TEMPLATE = r"""// ==UserScript==
         phase: "prepare",
         currentTask: { ...task, captcha_attempt: attempts + 1 },
         lastMessage: `${task.district} / ${task.plate} / ${task.listing_age} 页面结果未刷新，重试`,
+        lastError: ""
+      });
+      scheduleTick(rand(CONFIG.runner.after_filter_ms));
+      return;
+    }
+
+    if (outcome.kind === "mismatched_result") {
+      const attempts = task.captcha_attempt || 1;
+      if (attempts >= CONFIG.runner.max_captcha_refresh) {
+        await appendResult({
+          ...basePayload,
+          status: "mismatched_result_exhausted",
+          count: summary.count,
+          page_count: summary.pageCount,
+          page_excerpt: (summary.text || "").slice(0, 1000)
+        });
+        const next = saveState({
+          index: state.index + 1,
+          phase: "prepare",
+          currentTask: null,
+          failureCount: (state.failureCount || 0) + 1,
+          lastMessage: `${task.district} / ${task.plate} / ${task.listing_age} 结果归属不一致，重试耗尽`,
+          lastError: ""
+        });
+        if (next.index >= PLAN.items.length) {
+          saveState({ active: false, phase: "done", lastMessage: "全部任务完成" });
+        } else {
+          scheduleTick(rand(CONFIG.runner.between_queries_ms));
+        }
+        return;
+      }
+
+      saveState({
+        phase: "prepare",
+        currentTask: { ...task, captcha_attempt: attempts + 1 },
+        lastMessage: `${task.district} / ${task.plate} / ${task.listing_age} 结果归属不一致，重试`,
         lastError: ""
       });
       scheduleTick(rand(CONFIG.runner.after_filter_ms));
@@ -952,10 +1071,11 @@ TEMPLATE = r"""// ==UserScript==
     }
 
     for (let retries = 0; retries < CONFIG.runner.max_captcha_refresh; retries += 1) {
-      const stableSnapshot = await waitFor(() => {
-        const snapshot = currentFormSnapshot();
-        return snapshotMatchesTask(snapshot, task) ? snapshot : null;
-      }, 4000, 150);
+      const stableSnapshot = await waitForStableValue(
+        () => currentFormSnapshot(),
+        (snapshot) => snapshotMatchesTask(snapshot, task),
+        5000
+      );
 
       if (!stableSnapshot) {
         saveState({
@@ -1013,7 +1133,8 @@ TEMPLATE = r"""// ==UserScript==
           pre_submit_count: preSubmitSummary.count,
           pre_submit_page_count: preSubmitSummary.pageCount,
           pre_submit_page_url: location.href,
-          pre_submit_result_signature: currentResultSignature()
+          pre_submit_result_signature: currentResultSignature(),
+          pre_submit_pager_signature: currentPagerSignature()
         },
         lastMessage: `提交中 ${task.district} / ${task.plate} / ${task.listing_age}`,
         lastError: ""
