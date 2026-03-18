@@ -566,8 +566,10 @@ TEMPLATE = r"""// ==UserScript==
     const form = currentFormSnapshot();
     return {
       count: summary.count,
+      matchedCount: summary.matchedCount,
       pageCount: summary.pageCount,
       urlCount: summary.urlCount,
+      summaryText: summary.summaryText,
       resultSignature: currentResultSignature(),
       pagerSignature: currentPagerSignature(),
       form_snapshot: form,
@@ -625,6 +627,8 @@ TEMPLATE = r"""// ==UserScript==
     } catch {}
     return {
       count: match ? Number(match[1]) : urlCount,
+      matchedCount: match ? Number(match[1]) : null,
+      summaryText: match ? normalizeSpace(match[0] || "") : "",
       pageCount: urlPageCount,
       urlCount,
       text
@@ -633,7 +637,7 @@ TEMPLATE = r"""// ==UserScript==
 
   async function waitForSubmissionOutcome(task) {
     const settleMs = CONFIG.runner.post_submit_settle_ms || 2500;
-    const waitMs = CONFIG.runner.result_wait_ms || 8000;
+    const waitMs = CONFIG.runner.result_wait_ms || 12000;
 
     await sleep(settleMs);
 
@@ -641,12 +645,10 @@ TEMPLATE = r"""// ==UserScript==
       () => {
         const sample = resultSampleForTask(task);
         const alertMessage = peekLastAlert();
-        const urlChanged = sample.page_url !== (task.pre_submit_page_url || "");
-        const countChanged = sample.count !== (task.pre_submit_count ?? null);
-        const pageCountChanged = sample.pageCount !== (task.pre_submit_page_count ?? null);
         const resultSignatureChanged = sample.resultSignature && sample.resultSignature !== (task.pre_submit_result_signature || "");
         const pagerSignatureChanged = sample.pagerSignature && sample.pagerSignature !== (task.pre_submit_pager_signature || "");
-        const pageAdvanced = urlChanged || countChanged || pageCountChanged || resultSignatureChanged || pagerSignatureChanged;
+        const summaryTextChanged = sample.summaryText && sample.summaryText !== (task.pre_submit_summary_text || "");
+        const pageAdvanced = resultSignatureChanged || pagerSignatureChanged || summaryTextChanged;
         return {
           kind:
             (captchaErrorRe.test(sample.text || "") || captchaErrorRe.test(alertMessage || "") || /验证码/.test(alertMessage || "")) ? "captcha_error" :
@@ -668,12 +670,10 @@ TEMPLATE = r"""// ==UserScript==
 
     const finalSummary = resultSampleForTask(task);
     const finalAlert = peekLastAlert();
-    const urlChanged = finalSummary.page_url !== (task.pre_submit_page_url || "");
-    const countChanged = finalSummary.count !== (task.pre_submit_count ?? null);
-    const pageCountChanged = finalSummary.pageCount !== (task.pre_submit_page_count ?? null);
     const resultSignatureChanged = finalSummary.resultSignature && finalSummary.resultSignature !== (task.pre_submit_result_signature || "");
     const pagerSignatureChanged = finalSummary.pagerSignature && finalSummary.pagerSignature !== (task.pre_submit_pager_signature || "");
-    const pageAdvanced = urlChanged || countChanged || pageCountChanged || resultSignatureChanged || pagerSignatureChanged;
+    const summaryTextChanged = finalSummary.summaryText && finalSummary.summaryText !== (task.pre_submit_summary_text || "");
+    const pageAdvanced = resultSignatureChanged || pagerSignatureChanged || summaryTextChanged;
 
     if (captchaErrorRe.test(finalAlert || "") || /验证码/.test(finalAlert || "")) {
       return { kind: "captcha_error", summary: finalSummary };
@@ -1133,6 +1133,7 @@ TEMPLATE = r"""// ==UserScript==
           pre_submit_count: preSubmitSummary.count,
           pre_submit_page_count: preSubmitSummary.pageCount,
           pre_submit_page_url: location.href,
+          pre_submit_summary_text: preSubmitSummary.summaryText,
           pre_submit_result_signature: currentResultSignature(),
           pre_submit_pager_signature: currentPagerSignature()
         },
