@@ -580,6 +580,17 @@ TEMPLATE = r"""// ==UserScript==
     };
   }
 
+  function queryParamsMatchTask(sample, task) {
+    const submitted = task && task.form_snapshot;
+    const params = sample && sample.query_params;
+    if (!submitted || !params) return false;
+    return (
+      (!!submitted.district_value && params.district === submitted.district_value) &&
+      (!!submitted.plate_value && params.region === submitted.plate_value) &&
+      (!!submitted.listing_age_value && params.time === submitted.listing_age_value)
+    );
+  }
+
   function currentQueryParams() {
     try {
       const params = new URL(location.href).searchParams;
@@ -649,12 +660,14 @@ TEMPLATE = r"""// ==UserScript==
         const pagerSignatureChanged = sample.pagerSignature && sample.pagerSignature !== (task.pre_submit_pager_signature || "");
         const summaryTextChanged = sample.summaryText && sample.summaryText !== (task.pre_submit_summary_text || "");
         const pageAdvanced = resultSignatureChanged || pagerSignatureChanged || summaryTextChanged;
+        const queryMatchesTask = queryParamsMatchTask(sample, task);
         return {
           kind:
             (captchaErrorRe.test(sample.text || "") || captchaErrorRe.test(alertMessage || "") || /验证码/.test(alertMessage || "")) ? "captcha_error" :
-            (sample.count !== null && sample.form_matches_task && pageAdvanced ? "success" : "pending"),
+            (sample.count !== null && sample.form_matches_task && (pageAdvanced || queryMatchesTask) ? "success" : "pending"),
           sample,
-          pageAdvanced
+          pageAdvanced,
+          queryMatchesTask
         };
       },
       (value) => value && (value.kind === "captcha_error" || value.kind === "success"),
@@ -674,16 +687,21 @@ TEMPLATE = r"""// ==UserScript==
     const pagerSignatureChanged = finalSummary.pagerSignature && finalSummary.pagerSignature !== (task.pre_submit_pager_signature || "");
     const summaryTextChanged = finalSummary.summaryText && finalSummary.summaryText !== (task.pre_submit_summary_text || "");
     const pageAdvanced = resultSignatureChanged || pagerSignatureChanged || summaryTextChanged;
+    const queryMatchesTask = queryParamsMatchTask(finalSummary, task);
 
     if (captchaErrorRe.test(finalAlert || "") || /验证码/.test(finalAlert || "")) {
       return { kind: "captcha_error", summary: finalSummary };
+    }
+
+    if (finalSummary.count !== null && finalSummary.form_matches_task && queryMatchesTask) {
+      return { kind: "success", summary: finalSummary };
     }
 
     if (finalSummary.count !== null && pageAdvanced && !finalSummary.form_matches_task) {
       return { kind: "mismatched_result", summary: finalSummary };
     }
 
-    if (finalSummary.count !== null && !pageAdvanced) {
+    if (finalSummary.count !== null && !pageAdvanced && !queryMatchesTask) {
       return { kind: "stale_result", summary: finalSummary };
     }
 
