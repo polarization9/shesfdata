@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlparse
 
 
 SUCCESS_STATUS = "success"
+MARKET_STATS_STATUS = "market_stats_snapshot"
 
 
 def parse_timestamp(item):
@@ -70,6 +71,7 @@ def main():
     latest_success_by_task = {}
     failures = []
     status_counter = Counter()
+    latest_market_stats = None
 
     for item in rows:
         status = item.get("status", "")
@@ -80,7 +82,10 @@ def main():
         if item.get("page_count") is None and page_count_from_url is not None:
           item["page_count"] = page_count_from_url
 
-        if status == SUCCESS_STATUS and item.get("count") is not None:
+        if status == MARKET_STATS_STATUS:
+            if latest_market_stats is None or parse_timestamp(item) >= parse_timestamp(latest_market_stats):
+                latest_market_stats = item
+        elif status == SUCCESS_STATUS and item.get("count") is not None:
             key = item.get("task_id") or f"{item.get('district')}|{item.get('plate')}|{item.get('listing_age')}"
             existing = latest_success_by_task.get(key)
             if existing is None or parse_timestamp(item) >= parse_timestamp(existing):
@@ -196,6 +201,7 @@ def main():
             "district_count": len({row["district"] for row in normalized}),
             "plate_count": len({(row["district"], row["plate"]) for row in normalized}),
             "status_counts": dict(status_counter),
+            "market_stats": (latest_market_stats or {}).get("market_stats", {}),
         }
         summary_path = Path(args.summary_json)
         summary_path.parent.mkdir(parents=True, exist_ok=True)

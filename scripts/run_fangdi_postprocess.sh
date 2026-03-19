@@ -101,6 +101,7 @@ HISTORY_SUMMARY_JSON="${REPORT_DIR}/history_summary.json"
 HEADLINES_MD="${REPORT_DIR}/headline_candidates.md"
 CAPTION_MD="${REPORT_DIR}/caption_draft.md"
 CARDS_DIR="${REPORT_DIR}/cards"
+FULL_TABLE_CARDS_DIR="${REPORT_DIR}/cards"
 
 echo "[fangdi] normalize raw results"
 "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/normalize_fangdi_results.py" \
@@ -127,6 +128,7 @@ DAILY_ARGS=(
   "${PLATE_METRICS_CSV}"
   "${DISTRICT_METRICS_CSV}"
   "${INSIGHTS_JSON}"
+  --normalized-summary-json "${DAILY_SUMMARY_JSON}"
 )
 if [[ -n "${PREVIOUS_DAILY_COUNTS}" ]]; then
   DAILY_ARGS+=(--previous-daily-counts "${PREVIOUS_DAILY_COUNTS}")
@@ -161,6 +163,10 @@ else
       "${DISTRICT_METRICS_CSV}" \
       "${INSIGHTS_JSON}" \
       "${CARDS_DIR}"
+    echo "[fangdi] render full table cards"
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/render_fangdi_full_table_cards.py" \
+      "${PLATE_METRICS_CSV}" \
+      "${FULL_TABLE_CARDS_DIR}"
   else
     echo "[fangdi] matplotlib not installed, skip cards"
   fi

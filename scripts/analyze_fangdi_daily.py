@@ -14,6 +14,10 @@ def load_csv_rows(path):
         return list(csv.DictReader(handle))
 
 
+def load_json(path):
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
 def to_int(value):
     try:
         return int(value)
@@ -152,7 +156,7 @@ def write_csv(path, rows, fieldnames):
         writer.writerows(rows)
 
 
-def build_insights(plate_rows, district_rows, has_history=False):
+def build_insights(plate_rows, district_rows, has_history=False, market_stats=None):
     sorted_district_total = sorted(district_rows, key=lambda row: row["total_count"], reverse=True)
     sorted_district_stale = sorted(district_rows, key=lambda row: row["stale_ratio"], reverse=True)
     sorted_plate_total = sorted(plate_rows, key=lambda row: row["total_count"], reverse=True)
@@ -174,6 +178,7 @@ def build_insights(plate_rows, district_rows, has_history=False):
             "plate_count": len(plate_rows),
             "city_total_count": sum(row["total_count"] for row in district_rows),
             "history_mode": "with_daily_comparison" if has_history else "day1_absolute_only",
+            "market_stats": market_stats or {},
         },
         "top_districts_by_total": sorted_district_total[:10],
         "top_districts_by_stale_ratio": sorted_district_stale[:10],
@@ -208,6 +213,7 @@ def main():
     parser.add_argument("district_metrics_csv", help="district metrics csv output")
     parser.add_argument("insights_json", help="insights json output")
     parser.add_argument("--previous-daily-counts", help="optional previous day normalized csv")
+    parser.add_argument("--normalized-summary-json", help="optional normalized summary json with market stats")
     args = parser.parse_args()
 
     current_rows = [row for row in load_csv_rows(args.daily_counts_csv) if row.get("status") == "success"]
@@ -259,7 +265,11 @@ def main():
     write_csv(args.plate_metrics_csv, plate_rows, plate_fields)
     write_csv(args.district_metrics_csv, district_rows, district_fields)
 
-    insights = build_insights(plate_rows, district_rows, has_history=has_history)
+    market_stats = {}
+    if args.normalized_summary_json and Path(args.normalized_summary_json).exists():
+        market_stats = load_json(args.normalized_summary_json).get("market_stats", {}) or {}
+
+    insights = build_insights(plate_rows, district_rows, has_history=has_history, market_stats=market_stats)
     insights_path = Path(args.insights_json)
     insights_path.parent.mkdir(parents=True, exist_ok=True)
     insights_path.write_text(json.dumps(insights, ensure_ascii=False, indent=2), encoding="utf-8")

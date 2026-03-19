@@ -142,7 +142,8 @@ TEMPLATE = r"""// ==UserScript==
       lastMessage: "",
       runStartedAt: "",
       successCount: 0,
-      failureCount: 0
+      failureCount: 0,
+      marketStatsCaptured: false
     };
   }
 
@@ -511,6 +512,50 @@ TEMPLATE = r"""// ==UserScript==
       listing_age_rendered_text: listingAge ? normalizeSpace(renderedSelectedText(listingAge)) : "",
       captcha_value: captchaInput ? (captchaInput.value || "") : ""
     };
+  }
+
+  function readDailyMarketStats() {
+    const text = document.body ? normalizeSpace(document.body.innerText || "") : "";
+    const transactionCountMatch =
+      text.match(/昨日二手房成交套数[:：]?\s*([0-9,]+)\s*套/) ||
+      text.match(/昨日成交套数[:：]?\s*([0-9,]+)\s*套/);
+    const transactionAreaMatch =
+      text.match(/昨日二手房成交面积[:：]?\s*([0-9,.]+)\s*(?:㎡|m²|m2)/i) ||
+      text.match(/昨日成交面积[:：]?\s*([0-9,.]+)\s*(?:㎡|m²|m2)/i);
+    const updateTimeMatch =
+      text.match(/数据更新时间(?:每日)?\s*([0-9]{1,2}:[0-9]{2})/) ||
+      text.match(/更新时间(?:每日)?\s*([0-9]{1,2}:[0-9]{2})/);
+
+    const transactionCount = transactionCountMatch ? Number(String(transactionCountMatch[1]).replace(/,/g, "")) : null;
+    const transactionArea = transactionAreaMatch ? Number(String(transactionAreaMatch[1]).replace(/,/g, "")) : null;
+    const updateTime = updateTimeMatch ? updateTimeMatch[1] : "";
+
+    if (transactionCount === null && transactionArea === null && !updateTime) {
+      return null;
+    }
+
+    return {
+      transaction_count: Number.isFinite(transactionCount) ? transactionCount : null,
+      transaction_area_sqm: Number.isFinite(transactionArea) ? transactionArea : null,
+      update_time: updateTime,
+      source_page_url: location.href
+    };
+  }
+
+  async function captureDailyMarketStatsIfNeeded(state) {
+    if (state.marketStatsCaptured) return state;
+    const stats = readDailyMarketStats();
+    if (!stats) return state;
+    await appendResult({
+      status: "market_stats_snapshot",
+      recorded_at: now(),
+      page_url: location.href,
+      market_stats: stats
+    });
+    return saveState({
+      marketStatsCaptured: true,
+      lastMessage: state.lastMessage || "已抓取昨日成交概览"
+    });
   }
 
   function currentResultSignature() {
@@ -1195,9 +1240,10 @@ TEMPLATE = r"""// ==UserScript==
     if (window[BOOT_KEY]) return;
     window[BOOT_KEY] = true;
     try {
-      const state = loadState();
+      let state = loadState();
       updateOverlay(state);
       if (!state.active) return;
+      state = await captureDailyMarketStatsIfNeeded(state);
       if (state.phase === "submitted") {
         await processSubmittedPage(state);
       } else {
